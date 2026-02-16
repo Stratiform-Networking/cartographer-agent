@@ -2,7 +2,7 @@ use crate::auth::check_auth;
 use crate::cloud::CloudClient;
 use crate::commands::SCAN_PROGRESS_EVENT;
 use crate::persistence;
-use crate::scanner::{ping_device, scan_network_with_progress, Device, ScanProgress};
+use crate::scanner::{check_device_reachable, get_arp_table_ips, scan_network_with_progress, Device, ScanProgress};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -174,9 +174,20 @@ fn normalize_mac(mac: &str) -> String {
 /// - If the new device has response_time_ms, use the new value
 /// - If IP match found but MAC differs, update the MAC
 /// - If no IP match but MAC matches, treat as same device with IP change
-/// Devices not matched by either key are kept but marked as offline (response_time_ms = None).
-pub async fn merge_devices_preserving_health(new_devices: Vec<Device>) {
+/// Devices not matched by either key are kept but marked as offline (response_time_ms = None),
+/// but only if they are within the target subnet. Out-of-subnet devices are dropped to avoid
+/// retaining stale entries from other interfaces (VPN, containers, virtual adapters).
+pub async fn merge_devices_preserving_health(new_devices: Vec<Device>, subnet: &str) {
     let mut known = KNOWN_DEVICES.lock().await;
+
+    // Parse subnet for filtering stale offline devices from other interfaces
+    let subnet_network: Option<ipnetwork::IpNetwork> = match subnet.parse() {
+        Ok(net) => Some(net),
+        Err(e) => {
+            tracing::warn!("Could not parse subnet '{}' for merge filtering: {}", subnet, e);
+            None
+        }
+    };
 
     // Create maps for dual-key lookup
     let old_device_map: std::collections::HashMap<String, Device> =
@@ -267,9 +278,25 @@ pub async fn merge_devices_preserving_health(new_devices: Vec<Device>) {
         })
         .collect();
 
-    // Add old devices that weren't matched by either IP or MAC, marking them as offline
+    // Add old devices that weren't matched by either IP or MAC, marking them as offline.
+    // Only retain offline devices that are within the target subnet to avoid keeping
+    // stale entries from other interfaces (VPN, containers, virtual adapters).
     for old_device in old_device_map.values() {
         if !matched_old_ips.contains(&old_device.ip) {
+            // Drop out-of-subnet devices instead of keeping them as offline
+            if let Some(ref network) = subnet_network {
+                if let Ok(ip) = old_device.ip.parse::<std::net::IpAddr>() {
+                    if !network.contains(ip) {
+                        tracing::info!(
+                            "Dropping out-of-subnet device {} (not in {})",
+                            old_device.ip,
+                            subnet
+                        );
+                        continue;
+                    }
+                }
+            }
+
             tracing::info!(
                 "Device {} not found in scan, marking as offline",
                 old_device.ip
@@ -409,7 +436,7 @@ async fn run_scan_and_upload(app: &AppHandle) {
             record_scan_time();
 
             // Merge new devices with existing ones, preserving health data
-            merge_devices_preserving_health(scan_result.devices.clone()).await;
+            merge_devices_preserving_health(scan_result.devices.clone(), &scan_result.network_info.subnet).await;
 
             // Persist to disk
             persist_state().await;
@@ -470,11 +497,13 @@ async fn run_health_checks_and_upload(app: &AppHandle) {
 
     tracing::debug!("Running health checks on {} devices", devices.len());
 
-    // Check all known devices using ping only (no ARP fallback)
-    // ARP cache can be stale, so we rely solely on ICMP ping for accurate health status
+    // Get fresh ARP table for fallback checking
+    // Devices that block ICMP (common on Windows) but are in ARP cache are still reachable
+    let arp_ips = get_arp_table_ips().await;
+
     let mut health_results = Vec::new();
     for device in &mut devices {
-        let result = ping_device(&device.ip).await;
+        let result = check_device_reachable(&device.ip, &arp_ips).await;
         let reachable = result.is_ok();
         let response_time = if reachable { result.ok() } else { None };
         
@@ -569,13 +598,15 @@ async fn run_health_checks_with_progress(app: &AppHandle) {
         },
     );
 
-    // Check all known devices using ping only (no ARP fallback)
-    // ARP cache can be stale, so we rely solely on ICMP ping for accurate health status
+    // Get fresh ARP table for fallback checking
+    // Devices that block ICMP (common on Windows) but are in ARP cache are still reachable
+    let arp_ips = get_arp_table_ips().await;
+
     let mut health_results = Vec::new();
     let mut healthy_count = 0;
 
     for (i, device) in devices.iter_mut().enumerate() {
-        let result = ping_device(&device.ip).await;
+        let result = check_device_reachable(&device.ip, &arp_ips).await;
         let reachable = result.is_ok();
         let response_time = if reachable { result.ok() } else { None };
 
