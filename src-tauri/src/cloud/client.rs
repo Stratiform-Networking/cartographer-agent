@@ -1,4 +1,5 @@
 use crate::scanner::{Device, ScanResult};
+use super::commands::{ClaimResponse, PollResponse, ResultReport, ResultResponse};
 use super::config::{load_cloud_config, CloudEndpointConfig};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -325,6 +326,89 @@ impl CloudClient {
         let url = format!("{}/app/network/{}", self.config.dashboard_url, creds.network_id);
         webbrowser::open(&url)
             .context("Failed to open dashboard in browser")
+    }
+
+    /// Long-poll for pending commands. Uses a client timeout of `timeout_secs + 5`
+    /// to give the server time to respond before the client gives up.
+    pub async fn poll_commands(&self, token: &str, timeout_secs: u64) -> Result<PollResponse> {
+        let url = format!(
+            "{}/agent/commands/poll?timeout={}",
+            self.config.api_url, timeout_secs
+        );
+
+        let resp = self.http_client
+            .get(&url)
+            .bearer_auth(token)
+            .timeout(std::time::Duration::from_secs(timeout_secs + 5))
+            .send()
+            .await
+            .context("Failed to poll for commands")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Poll failed: {} - {}", status, body));
+        }
+
+        resp.json::<PollResponse>()
+            .await
+            .context("Failed to parse poll response")
+    }
+
+    /// Claim a pending command so no other agent instance picks it up.
+    pub async fn claim_command(&self, token: &str, command_id: i64) -> Result<ClaimResponse> {
+        let url = format!(
+            "{}/agent/commands/{}/claim",
+            self.config.api_url, command_id
+        );
+
+        let resp = self.http_client
+            .post(&url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("Failed to claim command")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Claim failed: {} - {}", status, body));
+        }
+
+        resp.json::<ClaimResponse>()
+            .await
+            .context("Failed to parse claim response")
+    }
+
+    /// Report the result of a command execution back to the cloud.
+    pub async fn report_command_result(
+        &self,
+        token: &str,
+        command_id: i64,
+        report: &ResultReport,
+    ) -> Result<ResultResponse> {
+        let url = format!(
+            "{}/agent/commands/{}/result",
+            self.config.api_url, command_id
+        );
+
+        let resp = self.http_client
+            .post(&url)
+            .bearer_auth(token)
+            .json(report)
+            .send()
+            .await
+            .context("Failed to report command result")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Report failed: {} - {}", status, body));
+        }
+
+        resp.json::<ResultResponse>()
+            .await
+            .context("Failed to parse result response")
     }
 }
 
