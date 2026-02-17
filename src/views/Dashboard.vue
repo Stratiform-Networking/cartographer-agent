@@ -133,6 +133,20 @@
           </div>
         </div>
 
+        <!-- Cloud Command Banner -->
+        <div v-if="cloudCommand" class="p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg mb-4">
+          <div class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-purple-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z" />
+            </svg>
+            <span class="text-sm font-medium text-purple-400">
+              {{ cloudCommandLabel }}
+            </span>
+            <div v-if="cloudCommand.stage === 'executing'" class="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+          <p class="text-sm text-gray-400 mt-1">{{ cloudCommand.message }}</p>
+        </div>
+
         <!-- Scan Progress -->
         <div v-if="scanProgress" class="p-4 bg-brand-cyan/10 border border-brand-cyan/30 rounded-lg">
           <div class="flex items-center justify-between mb-2">
@@ -306,7 +320,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useAgentStore, type ScanStage, type HealthCheckStage, type HealthCheckProgress } from '@/stores/agent'
+import { useAgentStore, type ScanStage, type HealthCheckStage, type HealthCheckProgress, type CloudCommandEvent } from '@/stores/agent'
 import DeviceList from '@/components/DeviceList.vue'
 import DeviceHealthPieChart from '@/components/DeviceHealthPieChart.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -352,7 +366,7 @@ const scanElapsedTime = ref<number>(0)
 let scanElapsedInterval: ReturnType<typeof setInterval> | null = null
 
 // Use storeToRefs for proper reactivity with Pinia
-const { status, devices: storeDevices, scanning, scanProgress, healthCheckProgress } = storeToRefs(agentStore)
+const { status, devices: storeDevices, scanning, scanProgress, healthCheckProgress, cloudCommand } = storeToRefs(agentStore)
 
 // Create a computed that explicitly tracks device changes
 const devices = computed(() => storeDevices.value)
@@ -487,6 +501,17 @@ const statusDotClass = computed(() => {
       return 'bg-red-500'
     default:
       return 'bg-green-500'
+  }
+})
+
+// Get human-readable label for cloud command stage
+const cloudCommandLabel = computed(() => {
+  switch (cloudCommand.value?.stage) {
+    case 'received': return 'Remote Scan Requested'
+    case 'executing': return 'Remote Scan In Progress'
+    case 'completed': return 'Remote Scan Complete'
+    case 'failed': return 'Remote Scan Failed'
+    default: return 'Remote Command'
   }
 })
 
