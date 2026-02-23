@@ -8,9 +8,14 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const STATE_FILE: &str = "agent_state.json";
+const DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS: u64 = 2 * 60 * 60;
+
+fn default_automatic_full_scan_min_interval_seconds() -> u64 {
+    DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS
+}
 
 /// Persisted agent state
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentState {
     /// Last scan timestamp (Unix seconds)
     pub last_scan_time: u64,
@@ -20,12 +25,34 @@ pub struct AgentState {
     pub scan_interval_minutes: u64,
     /// Health check interval in seconds
     pub health_check_interval_seconds: u64,
+    /// Last automatic device discovery scan attempt timestamp (Unix seconds)
+    #[serde(default)]
+    pub last_automatic_scan_time: u64,
+    /// Minimum cooldown between automatic discovery scans (manual scans are exempt)
+    #[serde(default = "default_automatic_full_scan_min_interval_seconds")]
+    pub automatic_full_scan_min_interval_seconds: u64,
     /// Version from a silent update that just completed (cleared after notification shown)
     #[serde(default)]
     pub silent_update_version: Option<String>,
     /// Whether the app should start hidden after a restart (e.g., after background update)
     #[serde(default)]
     pub restart_hidden: bool,
+}
+
+impl Default for AgentState {
+    fn default() -> Self {
+        Self {
+            last_scan_time: 0,
+            devices: Vec::new(),
+            scan_interval_minutes: 0,
+            health_check_interval_seconds: 0,
+            last_automatic_scan_time: 0,
+            automatic_full_scan_min_interval_seconds:
+                DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS,
+            silent_update_version: None,
+            restart_hidden: false,
+        }
+    }
 }
 
 /// Get the path to the state file
@@ -87,6 +114,20 @@ pub fn save_scan_results(devices: &[Device], scan_time: u64) -> Result<()> {
     let mut state = load_state().unwrap_or_default();
     state.devices = devices.to_vec();
     state.last_scan_time = scan_time;
+    save_state(&state)
+}
+
+/// Update just the last automatic scan timestamp
+pub fn save_last_automatic_scan_time(scan_time: u64) -> Result<()> {
+    let mut state = load_state().unwrap_or_default();
+    state.last_automatic_scan_time = scan_time;
+    save_state(&state)
+}
+
+/// Persist the automatic full scan cooldown (seconds)
+pub fn save_automatic_full_scan_min_interval_seconds(seconds: u64) -> Result<()> {
+    let mut state = load_state().unwrap_or_default();
+    state.automatic_full_scan_min_interval_seconds = seconds;
     save_state(&state)
 }
 
