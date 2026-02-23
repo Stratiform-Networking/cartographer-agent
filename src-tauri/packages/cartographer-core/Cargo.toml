@@ -1,6 +1,6 @@
 [package]
 name = "cartographer-core"
-version = "2.13.0"
+version = "2.13.1"
 description = "Cartographer core library - shared network scanning and cloud sync functionality"
 authors = ["Meridian Inc"]
 license = ""
