@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 /// Event name for health check progress updates
 pub const HEALTH_CHECK_PROGRESS_EVENT: &str = "health-check-progress";
+const DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS: u64 = 2 * 60 * 60;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +39,8 @@ pub enum HealthCheckStage {
 
 static SCAN_INTERVAL: AtomicU64 = AtomicU64::new(300); // Default 5 minutes
 static HEALTH_CHECK_INTERVAL: AtomicU64 = AtomicU64::new(60); // Default 1 minute
+static AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS: AtomicU64 =
+    AtomicU64::new(DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS);
 
 // Track if background tasks are already running
 static BACKGROUND_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -56,6 +59,8 @@ static KNOWN_DEVICES: Mutex<Vec<Device>> = Mutex::const_new(Vec::new());
 
 // Last scan timestamp (Unix timestamp in seconds)
 static LAST_SCAN_TIME: AtomicU64 = AtomicU64::new(0);
+// Last automatic full scan attempt timestamp (Unix timestamp in seconds)
+static LAST_AUTOMATIC_SCAN_TIME: AtomicU64 = AtomicU64::new(0);
 
 // Global AppHandle for starting background tasks from anywhere
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
@@ -80,12 +85,17 @@ pub fn init(app: AppHandle) {
     // Load persisted state
     if let Ok(state) = persistence::load_state() {
         LAST_SCAN_TIME.store(state.last_scan_time, Ordering::Relaxed);
+        LAST_AUTOMATIC_SCAN_TIME.store(state.last_automatic_scan_time, Ordering::Relaxed);
         if state.scan_interval_minutes > 0 {
             SCAN_INTERVAL.store(state.scan_interval_minutes * 60, Ordering::Relaxed);
         }
         if state.health_check_interval_seconds > 0 {
             HEALTH_CHECK_INTERVAL.store(state.health_check_interval_seconds, Ordering::Relaxed);
         }
+        AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS.store(
+            state.automatic_full_scan_min_interval_seconds,
+            Ordering::Relaxed,
+        );
         // Load devices into memory (spawn async task)
         if !state.devices.is_empty() {
             let devices = state.devices;
@@ -145,6 +155,21 @@ pub fn set_health_check_interval(seconds: u64) {
 
 pub fn get_health_check_interval() -> u64 {
     HEALTH_CHECK_INTERVAL.load(Ordering::Relaxed)
+}
+
+pub fn set_automatic_full_scan_min_interval_seconds(seconds: u64) {
+    AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS.store(seconds, Ordering::Relaxed);
+    if let Err(e) = persistence::save_automatic_full_scan_min_interval_seconds(seconds) {
+        tracing::warn!(
+            "Failed to persist automatic full scan cooldown ({}s): {}",
+            seconds,
+            e
+        );
+    }
+    tracing::info!(
+        "Automatic full scan minimum interval set to {} seconds",
+        seconds
+    );
 }
 
 /// Update the list of known devices (called after successful scans)
@@ -330,6 +355,39 @@ pub fn record_scan_time() {
     LAST_SCAN_TIME.store(now, Ordering::Relaxed);
 }
 
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn automatic_scan_remaining_cooldown_seconds(now: u64) -> Option<u64> {
+    let min_interval = AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS.load(Ordering::Relaxed);
+    if min_interval == 0 {
+        return None;
+    }
+
+    let last_automatic_scan = LAST_AUTOMATIC_SCAN_TIME.load(Ordering::Relaxed);
+    if last_automatic_scan == 0 {
+        return None;
+    }
+
+    let next_allowed_at = last_automatic_scan.saturating_add(min_interval);
+    if now >= next_allowed_at {
+        None
+    } else {
+        Some(next_allowed_at - now)
+    }
+}
+
+fn record_automatic_scan_time(now: u64) {
+    LAST_AUTOMATIC_SCAN_TIME.store(now, Ordering::Relaxed);
+    if let Err(e) = persistence::save_last_automatic_scan_time(now) {
+        tracing::warn!("Failed to persist automatic scan timestamp: {}", e);
+    }
+}
+
 /// Persist current state to disk (call after scans)
 pub async fn persist_state() {
     let devices = get_known_devices().await;
@@ -386,6 +444,11 @@ pub async fn stop_background_scanning() {
 /// Called during logout to ensure a clean slate when signing back in.
 pub fn reset_scan_state() {
     LAST_SCAN_TIME.store(0, Ordering::Relaxed);
+    LAST_AUTOMATIC_SCAN_TIME.store(0, Ordering::Relaxed);
+    AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS.store(
+        DEFAULT_AUTOMATIC_FULL_SCAN_MIN_INTERVAL_SECONDS,
+        Ordering::Relaxed,
+    );
     SCANNING_IN_PROGRESS.store(false, Ordering::SeqCst);
     HEALTH_CHECK_IN_PROGRESS.store(false, Ordering::SeqCst);
     SCAN_CANCEL_REQUESTED.store(false, Ordering::SeqCst);
@@ -410,6 +473,16 @@ pub fn clear_scan_cancel() {
 
 /// Helper to run a single scan and upload
 async fn run_scan_and_upload(app: &AppHandle) {
+    let now = current_unix_seconds();
+    if let Some(remaining) = automatic_scan_remaining_cooldown_seconds(now) {
+        tracing::info!(
+            "Skipping automatic network scan due to account rate limit ({}s remaining)",
+            remaining
+        );
+        return;
+    }
+    record_automatic_scan_time(now);
+
     tracing::info!("Running network scan");
 
     // Mark scan as in progress
@@ -1017,4 +1090,3 @@ async fn execute_cloud_command(app: &AppHandle, command_type: &str) -> Result<St
         _ => Err(format!("Unknown command type: {}", command_type)),
     }
 }
-

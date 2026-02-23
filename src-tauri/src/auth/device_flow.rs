@@ -1,5 +1,6 @@
 use crate::auth::credentials::{save_credentials, Credentials};
 use crate::cloud::CloudClient;
+use crate::scheduler::set_automatic_full_scan_min_interval_seconds;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -74,6 +75,8 @@ pub async fn poll_for_login(device_code: &str, expires_in: u64, poll_interval: u
                 let network_id = token_resp.network_id;
                 let network_name = token_resp.network_name;
                 let user_email = token_resp.user_email;
+                let automatic_full_scan_min_interval_seconds =
+                    token_resp.automatic_full_scan_min_interval_seconds;
                 
                 let creds = Credentials {
                     access_token: token_resp.access_token,
@@ -84,6 +87,9 @@ pub async fn poll_for_login(device_code: &str, expires_in: u64, poll_interval: u
                 };
                 
                 save_credentials(&creds).await?;
+                if let Some(seconds) = automatic_full_scan_min_interval_seconds {
+                    set_automatic_full_scan_min_interval_seconds(seconds);
+                }
                 
                 tracing::info!(
                     "Successfully connected to network '{}' (id: {})",
@@ -128,4 +134,3 @@ where
     // Poll for completion
     poll_for_login(&login_info.device_code, login_info.expires_in, login_info.poll_interval).await
 }
-

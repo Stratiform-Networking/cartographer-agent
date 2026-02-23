@@ -452,6 +452,7 @@ pub struct TokenResponse {
     pub network_id: String,
     pub network_name: String,
     pub user_email: String,
+    pub automatic_full_scan_min_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -501,4 +502,3 @@ struct HealthCheckResult {
     reachable: bool,
     response_time_ms: Option<f64>,
 }
-

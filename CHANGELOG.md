@@ -5,19 +5,27 @@ All notable changes to Cartographer Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-### [2.13.1](https://github.com/Meridian-Inc/cartographer-agent/compare/v2.13.0...v2.13.1) (2026-02-23)
-
-
-### 🐛 Bug Fixes
-
-* updates to company name ([bbff7b8](https://github.com/Meridian-Inc/cartographer-agent/commit/bbff7b8005afe8d8a21ee58ad4897b5afa2b1850))
-
-## [2.13.0](https://github.com/Meridian-Inc/cartographer-agent/compare/v2.12.0...v2.13.0) (2026-02-17)
+### [2.13.1](https://github.com/Meridian-Inc/cartographer-agent/compare/v2.12.0...v2.13.1) (2026-02-23)
 
 
 ### ✨ Features
 
 * add scan oversight ([80ce808](https://github.com/Meridian-Inc/cartographer-agent/commit/80ce808a6759aa154a168a52b2ab6602f0f41fe1))
+* add task execution capacity ([e800056](https://github.com/Meridian-Inc/cartographer-agent/commit/e800056c087f75167fb4289df6ff67cb4d9d2a54))
+
+
+### 🐛 Bug Fixes
+
+* merge ([5b1a689](https://github.com/Meridian-Inc/cartographer-agent/commit/5b1a689a6abc180b33a1f48900eff884ecf41bd4))
+* subnet dead scan issues ([c2375fc](https://github.com/Meridian-Inc/cartographer-agent/commit/c2375fc1649fae21c7af29b62531a8afd5fbedb1))
+
+## [2.13.0](https://github.com/Meridian-Inc/cartographer-agent/compare/v2.12.0...v2.13.0) (2026-02-22)
+
+
+### ✨ Features
+
+* add scan oversight ([80ce808](https://github.com/Meridian-Inc/cartographer-agent/commit/80ce808a6759aa154a168a52b2ab6602f0f41fe1))
+* add automatic scan intervals ([fd714fc](https://github.com/Meridian-Inc/cartographer-agent/commit/fd714fce68a50b1b3419a2994ffb105d63902176))
 
 ## [2.12.0](https://github.com/Meridian-Inc/cartographer-agent/compare/v2.11.3...v2.12.0) (2026-02-17)
 
