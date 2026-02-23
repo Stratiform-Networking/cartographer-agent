@@ -226,7 +226,7 @@ pub async fn scan_network(app: AppHandle) -> Result<ScanResultResponse, String> 
     record_scan_time();
 
     // Merge new devices with existing ones, preserving health data from previous health checks
-    merge_devices_preserving_health(scan_result.devices.clone()).await;
+    merge_devices_preserving_health(scan_result.devices.clone(), &scan_result.network_info.subnet).await;
 
     // Persist to disk
     persist_state().await;

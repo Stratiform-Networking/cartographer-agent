@@ -54,6 +54,15 @@ export interface HealthCheckProgress {
   syncedToCloud?: boolean
 }
 
+export type CloudCommandStage = 'received' | 'executing' | 'completed' | 'failed'
+
+export interface CloudCommandEvent {
+  stage: CloudCommandStage
+  commandId: number
+  commandType: string
+  message: string
+}
+
 /** Response from scan_network command */
 export interface ScanResultResponse {
   devices: Device[]
@@ -78,11 +87,13 @@ export const useAgentStore = defineStore('agent', () => {
   const scanInterval = ref(5) // minutes
   const scanProgress = ref<ScanProgress | null>(null)
   const healthCheckProgress = ref<HealthCheckProgress | null>(null)
+  const cloudCommand = ref<CloudCommandEvent | null>(null)
 
   // Event listener cleanup
   let progressUnlisten: UnlistenFn | null = null
   let healthUnlisten: UnlistenFn | null = null
   let scanCompleteUnlisten: UnlistenFn | null = null
+  let cloudCommandUnlisten: UnlistenFn | null = null
 
   const isAuthenticated = computed(() => status.value.authenticated)
 
@@ -131,7 +142,7 @@ export const useAgentStore = defineStore('agent', () => {
         setTimeout(() => {
           healthCheckProgress.value = null
         }, 3000) // Keep final message visible for 3 seconds
-        
+
         // Reload devices to get updated health data after background health checks
         invoke<Device[]>('get_devices')
           .then(result => {
@@ -140,6 +151,17 @@ export const useAgentStore = defineStore('agent', () => {
           .catch(error => {
             console.error('Failed to reload devices after health check:', error)
           })
+      }
+    })
+
+    // Listen for cloud command events (remote scan triggers from cloud UI)
+    cloudCommandUnlisten = await listen<CloudCommandEvent>('cloud-command', (event) => {
+      cloudCommand.value = event.payload
+      // Auto-clear after completion or failure
+      if (event.payload.stage === 'completed' || event.payload.stage === 'failed') {
+        setTimeout(() => {
+          cloudCommand.value = null
+        }, 5000)
       }
     })
   }
@@ -157,6 +179,10 @@ export const useAgentStore = defineStore('agent', () => {
     if (scanCompleteUnlisten) {
       scanCompleteUnlisten()
       scanCompleteUnlisten = null
+    }
+    if (cloudCommandUnlisten) {
+      cloudCommandUnlisten()
+      cloudCommandUnlisten = null
     }
   }
 
@@ -312,6 +338,7 @@ export const useAgentStore = defineStore('agent', () => {
     scanInterval,
     scanProgress,
     healthCheckProgress,
+    cloudCommand,
     isAuthenticated,
     checkAuth,
     login,

@@ -1,8 +1,8 @@
 use crate::auth::check_auth;
-use crate::cloud::CloudClient;
+use crate::cloud::{CloudClient, ResultReport};
 use crate::commands::SCAN_PROGRESS_EVENT;
 use crate::persistence;
-use crate::scanner::{ping_device, scan_network_with_progress, Device, ScanProgress};
+use crate::scanner::{check_device_reachable, get_arp_table_ips, scan_network_with_progress, Device, ScanProgress};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -199,9 +199,20 @@ fn normalize_mac(mac: &str) -> String {
 /// - If the new device has response_time_ms, use the new value
 /// - If IP match found but MAC differs, update the MAC
 /// - If no IP match but MAC matches, treat as same device with IP change
-/// Devices not matched by either key are kept but marked as offline (response_time_ms = None).
-pub async fn merge_devices_preserving_health(new_devices: Vec<Device>) {
+/// Devices not matched by either key are kept but marked as offline (response_time_ms = None),
+/// but only if they are within the target subnet. Out-of-subnet devices are dropped to avoid
+/// retaining stale entries from other interfaces (VPN, containers, virtual adapters).
+pub async fn merge_devices_preserving_health(new_devices: Vec<Device>, subnet: &str) {
     let mut known = KNOWN_DEVICES.lock().await;
+
+    // Parse subnet for filtering stale offline devices from other interfaces
+    let subnet_network: Option<ipnetwork::IpNetwork> = match subnet.parse() {
+        Ok(net) => Some(net),
+        Err(e) => {
+            tracing::warn!("Could not parse subnet '{}' for merge filtering: {}", subnet, e);
+            None
+        }
+    };
 
     // Create maps for dual-key lookup
     let old_device_map: std::collections::HashMap<String, Device> =
@@ -292,9 +303,25 @@ pub async fn merge_devices_preserving_health(new_devices: Vec<Device>) {
         })
         .collect();
 
-    // Add old devices that weren't matched by either IP or MAC, marking them as offline
+    // Add old devices that weren't matched by either IP or MAC, marking them as offline.
+    // Only retain offline devices that are within the target subnet to avoid keeping
+    // stale entries from other interfaces (VPN, containers, virtual adapters).
     for old_device in old_device_map.values() {
         if !matched_old_ips.contains(&old_device.ip) {
+            // Drop out-of-subnet devices instead of keeping them as offline
+            if let Some(ref network) = subnet_network {
+                if let Ok(ip) = old_device.ip.parse::<std::net::IpAddr>() {
+                    if !network.contains(ip) {
+                        tracing::info!(
+                            "Dropping out-of-subnet device {} (not in {})",
+                            old_device.ip,
+                            subnet
+                        );
+                        continue;
+                    }
+                }
+            }
+
             tracing::info!(
                 "Device {} not found in scan, marking as offline",
                 old_device.ip
@@ -482,7 +509,7 @@ async fn run_scan_and_upload(app: &AppHandle) {
             record_scan_time();
 
             // Merge new devices with existing ones, preserving health data
-            merge_devices_preserving_health(scan_result.devices.clone()).await;
+            merge_devices_preserving_health(scan_result.devices.clone(), &scan_result.network_info.subnet).await;
 
             // Persist to disk
             persist_state().await;
@@ -543,11 +570,13 @@ async fn run_health_checks_and_upload(app: &AppHandle) {
 
     tracing::debug!("Running health checks on {} devices", devices.len());
 
-    // Check all known devices using ping only (no ARP fallback)
-    // ARP cache can be stale, so we rely solely on ICMP ping for accurate health status
+    // Get fresh ARP table for fallback checking
+    // Devices that block ICMP (common on Windows) but are in ARP cache are still reachable
+    let arp_ips = get_arp_table_ips().await;
+
     let mut health_results = Vec::new();
     for device in &mut devices {
-        let result = ping_device(&device.ip).await;
+        let result = check_device_reachable(&device.ip, &arp_ips).await;
         let reachable = result.is_ok();
         let response_time = if reachable { result.ok() } else { None };
         
@@ -642,13 +671,15 @@ async fn run_health_checks_with_progress(app: &AppHandle) {
         },
     );
 
-    // Check all known devices using ping only (no ARP fallback)
-    // ARP cache can be stale, so we rely solely on ICMP ping for accurate health status
+    // Get fresh ARP table for fallback checking
+    // Devices that block ICMP (common on Windows) but are in ARP cache are still reachable
+    let arp_ips = get_arp_table_ips().await;
+
     let mut health_results = Vec::new();
     let mut healthy_count = 0;
 
     for (i, device) in devices.iter_mut().enumerate() {
-        let result = ping_device(&device.ip).await;
+        let result = check_device_reachable(&device.ip, &arp_ips).await;
         let reachable = result.is_ok();
         let response_time = if reachable { result.ok() } else { None };
 
@@ -850,6 +881,22 @@ pub async fn start_background_scanning(app: AppHandle) {
             }
         }
     });
+
+    // Spawn cloud command poll loop
+    let app_commands = app.clone();
+    let command_cancel_token = cancel_token.clone();
+    tokio::spawn(async move {
+        // Wait a few seconds for initial scan to start before polling for commands
+        tokio::select! {
+            _ = command_cancel_token.cancelled() => {
+                tracing::info!("Command poll task cancelled during initial wait");
+                return;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+        }
+
+        run_command_poll_loop(app_commands, command_cancel_token).await;
+    });
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -857,4 +904,189 @@ pub struct DeviceHealthResult {
     pub ip: String,
     pub reachable: bool,
     pub response_time_ms: Option<f64>,
+}
+
+// =============================================================================
+// Cloud command poll loop
+// =============================================================================
+
+/// Event name for cloud command progress updates
+pub const CLOUD_COMMAND_EVENT: &str = "cloud-command";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudCommandEvent {
+    pub stage: CloudCommandStage,
+    pub command_id: i64,
+    pub command_type: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudCommandStage {
+    Received,
+    Executing,
+    Completed,
+    Failed,
+}
+
+/// Long-poll loop that receives commands from the cloud and executes them.
+///
+/// - Waits for credentials; retries every 10s if not authenticated.
+/// - Uses 30s long-poll; the server responds immediately on new commands.
+/// - Exponential backoff on errors (1s -> 2s -> 4s -> ... -> 30s max), resets on success.
+async fn run_command_poll_loop(app: AppHandle, cancel_token: CancellationToken) {
+    let client = get_shared_cloud_client();
+    let mut backoff_secs: u64 = 1;
+    const MAX_BACKOFF: u64 = 30;
+    const POLL_TIMEOUT: u64 = 30;
+
+    loop {
+        if cancel_token.is_cancelled() {
+            tracing::info!("Command poll loop cancelled");
+            return;
+        }
+
+        // Load credentials
+        let creds = match crate::auth::load_credentials().await {
+            Ok(Some(c)) => c,
+            _ => {
+                tracing::debug!("Not authenticated, waiting before retrying command poll");
+                tokio::select! {
+                    _ = cancel_token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => continue,
+                }
+            }
+        };
+
+        // Long-poll for commands
+        let poll_result = tokio::select! {
+            _ = cancel_token.cancelled() => return,
+            r = client.poll_commands(&creds.access_token, POLL_TIMEOUT) => r,
+        };
+
+        match poll_result {
+            Ok(poll_response) => {
+                backoff_secs = 1; // Reset backoff on success
+
+                for pending_cmd in poll_response.commands {
+                    let cmd_id = pending_cmd.id;
+                    let cmd_type = pending_cmd.command_type.clone();
+
+                    tracing::info!(
+                        "Received cloud command #{}: {}",
+                        cmd_id, cmd_type
+                    );
+
+                    // Emit received event
+                    let _ = app.emit(
+                        CLOUD_COMMAND_EVENT,
+                        CloudCommandEvent {
+                            stage: CloudCommandStage::Received,
+                            command_id: cmd_id,
+                            command_type: cmd_type.clone(),
+                            message: format!("Received command: {}", cmd_type),
+                        },
+                    );
+
+                    // Claim the command
+                    if let Err(e) = client.claim_command(&creds.access_token, cmd_id).await {
+                        tracing::warn!("Failed to claim command #{}: {}", cmd_id, e);
+                        continue;
+                    }
+
+                    // Emit executing event
+                    let _ = app.emit(
+                        CLOUD_COMMAND_EVENT,
+                        CloudCommandEvent {
+                            stage: CloudCommandStage::Executing,
+                            command_id: cmd_id,
+                            command_type: cmd_type.clone(),
+                            message: format!("Executing: {}", cmd_type),
+                        },
+                    );
+
+                    // Execute the command
+                    let exec_result = execute_cloud_command(&app, &cmd_type).await;
+
+                    // Report result
+                    let report = match &exec_result {
+                        Ok(msg) => ResultReport {
+                            success: true,
+                            result: Some(msg.clone()),
+                            error_message: None,
+                        },
+                        Err(e) => ResultReport {
+                            success: false,
+                            result: None,
+                            error_message: Some(e.to_string()),
+                        },
+                    };
+
+                    if let Err(e) = client
+                        .report_command_result(&creds.access_token, cmd_id, &report)
+                        .await
+                    {
+                        tracing::warn!("Failed to report result for command #{}: {}", cmd_id, e);
+                    }
+
+                    // Emit final event
+                    let (stage, message) = match &exec_result {
+                        Ok(msg) => (CloudCommandStage::Completed, msg.clone()),
+                        Err(e) => (CloudCommandStage::Failed, e.to_string()),
+                    };
+
+                    let _ = app.emit(
+                        CLOUD_COMMAND_EVENT,
+                        CloudCommandEvent {
+                            stage,
+                            command_id: cmd_id,
+                            command_type: cmd_type,
+                            message,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Command poll error (backoff {}s): {}",
+                    backoff_secs, e
+                );
+                tokio::select! {
+                    _ = cancel_token.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {},
+                }
+                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF);
+            }
+        }
+    }
+}
+
+/// Dispatch a cloud command to the appropriate local action.
+async fn execute_cloud_command(app: &AppHandle, command_type: &str) -> Result<String, String> {
+    match command_type {
+        "scan_network" => {
+            if is_scanning() {
+                return Err("A scan is already in progress".to_string());
+            }
+            run_scan_and_upload(app).await;
+            let devices = get_known_devices().await;
+            Ok(format!("Scan completed: {} devices found", devices.len()))
+        }
+        "health_check" => {
+            if is_health_checking() {
+                return Err("A health check is already in progress".to_string());
+            }
+            run_health_checks_with_progress(app).await;
+            let devices = get_known_devices().await;
+            let healthy = devices.iter().filter(|d| d.response_time_ms.is_some()).count();
+            Ok(format!(
+                "Health check completed: {}/{} healthy",
+                healthy,
+                devices.len()
+            ))
+        }
+        _ => Err(format!("Unknown command type: {}", command_type)),
+    }
 }
