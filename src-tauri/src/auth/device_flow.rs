@@ -1,6 +1,6 @@
 use crate::auth::credentials::{save_credentials, Credentials};
 use crate::cloud::CloudClient;
-use crate::scheduler::set_automatic_full_scan_min_interval_seconds;
+use crate::scheduler::{set_automatic_full_scan_min_interval_seconds, set_health_check_interval};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -77,6 +77,7 @@ pub async fn poll_for_login(device_code: &str, expires_in: u64, poll_interval: u
                 let user_email = token_resp.user_email;
                 let automatic_full_scan_min_interval_seconds =
                     token_resp.automatic_full_scan_min_interval_seconds;
+                let health_poll_interval_seconds = token_resp.health_poll_interval_seconds;
                 
                 let creds = Credentials {
                     access_token: token_resp.access_token,
@@ -89,6 +90,9 @@ pub async fn poll_for_login(device_code: &str, expires_in: u64, poll_interval: u
                 save_credentials(&creds).await?;
                 if let Some(seconds) = automatic_full_scan_min_interval_seconds {
                     set_automatic_full_scan_min_interval_seconds(seconds);
+                }
+                if let Some(seconds) = health_poll_interval_seconds {
+                    set_health_check_interval(seconds);
                 }
                 
                 tracing::info!(

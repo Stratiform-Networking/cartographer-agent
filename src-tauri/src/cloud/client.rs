@@ -453,6 +453,7 @@ pub struct TokenResponse {
     pub network_name: String,
     pub user_email: String,
     pub automatic_full_scan_min_interval_seconds: Option<u64>,
+    pub health_poll_interval_seconds: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

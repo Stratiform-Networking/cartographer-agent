@@ -150,6 +150,13 @@ pub fn get_scan_interval() -> u64 {
 
 pub fn set_health_check_interval(seconds: u64) {
     HEALTH_CHECK_INTERVAL.store(seconds, Ordering::Relaxed);
+    if let Err(e) = persistence::save_health_check_interval_seconds(seconds) {
+        tracing::warn!(
+            "Failed to persist health check interval ({}s): {}",
+            seconds,
+            e
+        );
+    }
     tracing::info!("Health check interval set to {} seconds", seconds);
 }
 

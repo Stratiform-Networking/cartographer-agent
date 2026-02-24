@@ -131,6 +131,13 @@ pub fn save_automatic_full_scan_min_interval_seconds(seconds: u64) -> Result<()>
     save_state(&state)
 }
 
+/// Persist the health check interval (seconds)
+pub fn save_health_check_interval_seconds(seconds: u64) -> Result<()> {
+    let mut state = load_state().unwrap_or_default();
+    state.health_check_interval_seconds = seconds;
+    save_state(&state)
+}
+
 /// Get the stored last scan time
 pub fn get_stored_last_scan_time() -> u64 {
     load_state().map(|s| s.last_scan_time).unwrap_or(0)
