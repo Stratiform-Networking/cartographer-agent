@@ -2,7 +2,7 @@
 name = "cartographer-cli"
 version = "2.14.0"
 description = "Cartographer CLI - Lightweight network monitoring agent for Linux servers"
-authors = ["Meridian Inc"]
+authors = ["Stratiform LLC"]
 license = ""
 repository = ""
 edition = "2024"
