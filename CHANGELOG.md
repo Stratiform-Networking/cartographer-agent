@@ -5,6 +5,20 @@ All notable changes to Cartographer Agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### [2.14.1](https://github.com/Stratiform-Networking/cartographer-agent/compare/v2.14.0...v2.14.1) (2026-02-26)
+
+
+### 🐛 Bug Fixes
+
+* update to new org name ([5992e6e](https://github.com/Stratiform-Networking/cartographer-agent/commit/5992e6e08e90f1efab160ed694fc508902260be0))
+
+### [2.13.1](https://github.com/Stratiform-Networking/cartographer-agent/compare/v2.13.0...v2.13.1) (2026-02-23)
+
+
+### 🐛 Bug Fixes
+
+* updates to company name ([bbff7b8](https://github.com/Stratiform-Networking/cartographer-agent/commit/bbff7b8005afe8d8a21ee58ad4897b5afa2b1850))
+
 ## [2.14.0](https://github.com/Stratiform-Networking/cartographer-agent/compare/v2.13.1...v2.14.0) (2026-02-24)
 
 
